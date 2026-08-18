@@ -1,0 +1,337 @@
+// Prisma schema for M Sign Workflow
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum JobStage {
+  QUOTATION
+  PURCHASE_ORDER
+  SALE_ORDER
+  PRODUCTION
+  QC
+  DELIVERY
+  BILLING
+  ARCHIVED
+}
+
+enum PaymentStatus {
+  PENDING
+  PARTIAL
+  PAID
+}
+
+enum ProductType {
+  BOX
+  CARD
+  TAG
+  FOLDED_CARD
+  PACKAGING
+  MENU
+  STICKER
+  OTHER
+}
+
+enum PrintDocumentType {
+  QUOTATION
+  SALE_ORDER
+  TAX_INVOICE
+  BILLING_STATEMENT
+  RECEIPT
+}
+
+enum ActivityType {
+  STAGE_CHANGE
+  STEP_COMPLETED
+  STEP_REOPENED
+}
+
+// Roles are data, not a fixed enum, so Admin can create new ones and toggle
+// what each one can see, the way Discord roles work.
+model Role {
+  id       String   @id @default(cuid())
+  name     String   @unique
+  nameTh   String?
+  color    String   @default("#64748b")
+  isSystem Boolean  @default(false) // seeded roles (Admin/Sales/Floor); can be renamed but not deleted
+  createdAt DateTime @default(now())
+
+  permissions RolePermission[]
+  users       User[]
+}
+
+// key is one of the fixed keys in src/lib/permissions.ts. What keys EXIST is
+// defined in code (the app needs to know what a permission gates); which
+// roles HAVE which key is entirely data, toggleable from the settings page.
+model RolePermission {
+  id     String @id @default(cuid())
+  roleId String
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  key    String
+
+  @@unique([roleId, key])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  username     String   @unique
+  passwordHash String
+  roleId       String
+  role         Role     @relation(fields: [roleId], references: [id])
+  // Bypasses all permission checks when NOT impersonating another role via
+  // view-as. Safety net so toggling permissions in Settings can never lock
+  // every account out of Settings itself.
+  isSuperAdmin Boolean  @default(false)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  createdJobs   Job[]          @relation("JobCreatedBy")
+  closedCosts   ActualCost[]   @relation("CostClosedBy")
+  printLogs     PrintLog[]     @relation("PrintLogPrintedBy")
+  activityLogs  ActivityLog[]  @relation("ActivityLogActor")
+  notifications Notification[] @relation("NotificationRecipient")
+}
+
+model Client {
+  id             String   @id @default(cuid())
+  name           String
+  nameTh         String?
+  contactInfo    String?
+  taxId          String?
+  address        String?
+  creditTermDays Int?
+  createdAt      DateTime @default(now())
+
+  jobs Job[]
+}
+
+model Job {
+  id          String   @id @default(cuid())
+  jobCode     String   @unique
+  clientId    String
+  client      Client   @relation(fields: [clientId], references: [id])
+
+  jobName        String
+  // Optional short/internal name, used wherever the full jobName is too
+  // long for the space available (e.g. chart tooltips) - falls back to
+  // jobName when not set.
+  shortName      String?
+  productType    ProductType
+  description    String?
+  quantity       Int
+
+  paperType      String?
+  paperWeight    String?
+  paperSize      String?
+  printingLocation String?
+
+  // "has___" = this job needs this step (set at quoting).
+  // "___Done" = that step has actually been completed (set during production).
+  // Fixed pipeline order: prepress (Design, Mock, Plate) -> Printing
+  // (always required, no has* toggle) -> postpress (Emboss, Varnish, Glue,
+  // Diecut, Hot Stamp, K Coating, Folding). Order is informational only,
+  // not enforced - steps can be completed in any order, same as before.
+  hasDesign     Boolean @default(false)
+  designDone    Boolean @default(false)
+  hasMock       Boolean @default(false)
+  mockDone      Boolean @default(false)
+  hasPlate      Boolean @default(false)
+  plateDone     Boolean @default(false)
+
+  printDone     Boolean @default(false)
+
+  hasEmboss     Boolean @default(false)
+  embossDone    Boolean @default(false)
+  hasVarnish    Boolean @default(false)
+  varnishDone   Boolean @default(false)
+  hasGlue       Boolean @default(false)
+  glueDone      Boolean @default(false)
+  hasDieCut     Boolean @default(false)
+  dieCutDone    Boolean @default(false)
+  hasHotStamp   Boolean @default(false)
+  hotStampDone  Boolean @default(false)
+  hasKCoating   Boolean @default(false)
+  kCoatingDone  Boolean @default(false)
+  hasFolding    Boolean @default(false)
+  foldingDone   Boolean @default(false)
+
+  materialsReady   Boolean @default(false)
+  paperSupplier    String?
+  materialsOrderedAt DateTime?
+
+  qcPassed    Boolean?
+  qcNote      String?
+
+  stage       JobStage @default(QUOTATION)
+  closed      Boolean  @default(false)
+
+  poNumber    String?
+  poDate      DateTime?
+
+  deliveryDueDate    DateTime?
+  // Date of the FIRST delivery only, not updated by later partial
+  // shipments - only used as a fallback invoice date on print views,
+  // which need one date, not a full history (see Delivery below for that).
+  deliveryActualDate DateTime?
+  // Display-layer override: pulls the job out of red/amber urgency
+  // treatment everywhere due-date color is shown (Job Board badge, charts)
+  // without touching deliveryDueDate itself or the job's stage - for the
+  // "client asked us to hold it" case, not an actual scheduling change.
+  onHold             Boolean   @default(false)
+  holdReason         String?
+
+  // General delivery/transportation instructions for this job (special
+  // handling, address notes, etc) - distinct from Delivery.notes below,
+  // which is a note on one specific shipment. Editable any time, not tied
+  // to recording a delivery.
+  deliveryInstructions String?
+
+  createdById String
+  createdBy   User     @relation("JobCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  quote         Quote?
+  actualCost    ActualCost?
+  billing       Billing?
+  deliveries    Delivery[]
+  printLogs     PrintLog[]
+  activityLogs  ActivityLog[]
+  notifications Notification[]
+}
+
+// One row per shipment. Append-only log (no edit/delete UI), sum of
+// quantity across a job's deliveries can never exceed Job.quantity -
+// enforced in recordDelivery, not at the schema level.
+model Delivery {
+  id          String   @id @default(cuid())
+  jobId       String
+  job         Job      @relation(fields: [jobId], references: [id])
+  quantity    Int
+  deliveredAt DateTime @default(now())
+  notes       String?
+
+  createdAt DateTime @default(now())
+}
+
+// Logged when the Print button is actually clicked on a document view, not
+// when the document is merely opened/previewed on screen - that's the
+// preview/print distinction. Can't detect whether the OS print dialog was
+// actually completed vs cancelled (window.print() has no such callback), so
+// this is "printing was initiated," the clearest signal available.
+model PrintLog {
+  id           String            @id @default(cuid())
+  jobId        String
+  job          Job               @relation(fields: [jobId], references: [id])
+  documentType PrintDocumentType
+  printedById  String
+  printedBy    User              @relation("PrintLogPrintedBy", fields: [printedById], references: [id])
+  printedAt    DateTime          @default(now())
+}
+
+// Per-job history: stage transitions and production step completions only,
+// not every field edit. Shown as a sidebar on the job detail page.
+model ActivityLog {
+  id        String       @id @default(cuid())
+  jobId     String
+  job       Job          @relation(fields: [jobId], references: [id])
+  type      ActivityType
+  // STAGE_CHANGE: the new JobStage value. STEP_COMPLETED/STEP_REOPENED: the
+  // step's field name (e.g. "glueDone") - translated in the UI, not stored
+  // pre-translated, same as everywhere else in this app.
+  detail    String
+  actorId   String
+  actor     User         @relation("ActivityLogActor", fields: [actorId], references: [id])
+  createdAt DateTime     @default(now())
+}
+
+// Targeted by permission (see notifyByPermission), not picked per job - a
+// small fixed set of trigger rules in code, not a configurable rules engine.
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation("NotificationRecipient", fields: [userId], references: [id])
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id])
+  stage     String
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+// Client-facing quote. Admin-only fields (estimatedDM/DL/MOH) live here but are
+// filtered out at the query layer before anything reaches a role without
+// jobs.view_cost.
+model Quote {
+  id           String   @id @default(cuid())
+  jobId        String   @unique
+  job          Job      @relation(fields: [jobId], references: [id])
+
+  estimatedDM  Float
+  estimatedDL  Float
+  estimatedMOH Float
+  quotePrice   Float
+  // Stored per-quote, not a global default, VAT-exempt clients need 0 and
+  // the rate must stay fixed to what was actually quoted even if the
+  // standard rate changes later.
+  vatRate      Float @default(7)
+
+  createdAt DateTime @default(now())
+}
+
+// Filled in after the job closes. Gated by jobs.view_cost, same as Quote's
+// estimated fields.
+model ActualCost {
+  id           String   @id @default(cuid())
+  jobId        String   @unique
+  job          Job      @relation(fields: [jobId], references: [id])
+
+  actualDM     Float?
+  actualDL     Float?
+  actualMOH    Float?
+  actualProfit Float?
+
+  closedById String?
+  closedBy   User?     @relation("CostClosedBy", fields: [closedById], references: [id])
+  closedAt   DateTime?
+}
+
+model Billing {
+  id                  String        @id @default(cuid())
+  jobId               String        @unique
+  job                 Job           @relation(fields: [jobId], references: [id])
+
+  invoiceNumber       String?
+  amountDue           Float?
+  paymentStatus       PaymentStatus @default(PENDING)
+  paymentDueDate      DateTime?
+  paymentReceivedDate DateTime?
+  notes               String?
+
+  createdAt DateTime @default(now())
+}
+
+// Standalone reference catalog (paper/ink pricing + stock on hand), not
+// linked to Job - Job.paperType/paperWeight/paperSupplier stay free text.
+// quantityOnHand is a single number staff edit directly, no transaction
+// ledger, matches the same simplification as Job.materialsReady.
+model Material {
+  id               String   @id @default(cuid())
+  name             String
+  nameTh           String?
+  category         String?
+  supplier         String?
+  unit             String?
+  unitPrice        Float?
+  quantityOnHand   Float    @default(0)
+  reorderThreshold Float?
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}

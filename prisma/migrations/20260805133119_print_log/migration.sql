@@ -1,0 +1,10 @@
+-- CreateTable
+CREATE TABLE "PrintLog" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "jobId" TEXT NOT NULL,
+    "documentType" TEXT NOT NULL,
+    "printedById" TEXT NOT NULL,
+    "printedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "PrintLog_jobId_fkey" FOREIGN KEY ("jobId") REFERENCES "Job" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT "PrintLog_printedById_fkey" FOREIGN KEY ("printedById") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+);

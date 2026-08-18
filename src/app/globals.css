@@ -1,0 +1,61 @@
+@import "tailwindcss";
+@source not "../../node_modules";
+
+/* Manual toggle, not prefers-color-scheme: the "dark" class on <html> is set
+   server-side from a cookie (src/lib/theme.ts), so there's no flash of the
+   wrong theme on load the way a client-only toggle would have. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-plex-sans), var(--font-plex-sans-thai), sans-serif;
+}
+
+/* Generic layout for now, exact size/margins for pre-printed stock comes
+   later once tested against the real printer and paper. */
+@media print {
+  @page {
+    size: A4;
+    margin: 15mm;
+  }
+}
+
+/* Opt-in per-field: hides the native up/down stepper on a type="number"
+   input. Not applied globally - only fields that ask for it (e.g.
+   Quantity), other number inputs keep the native steppers. */
+.no-spinner::-webkit-outer-spin-button,
+.no-spinner::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.no-spinner {
+  -moz-appearance: textfield;
+}
+
+/* Highlights every currently-invalid required field at once (not just the
+   first one, the way native one-at-a-time validation popups do), applied
+   after a failed submit attempt - see NewJobForm.tsx. Live: as soon as a
+   field satisfies its constraint, :invalid stops matching and the border
+   reverts on its own, no extra JS needed per field. */
+form.validate-on-submit :invalid {
+  border-color: #ef4444;
+}
+.dark form.validate-on-submit :invalid {
+  border-color: #f87171;
+}
